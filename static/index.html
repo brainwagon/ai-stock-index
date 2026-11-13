@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI &amp; Adjacent Markets Index</title>
+  <link rel="stylesheet" href="static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-group">
+        <div class="brand-badge">AIX</div>
+        <div>
+          <h1>AI &amp; Adjacent Markets Index</h1>
+          <div class="subtitle">
+            <span class="live-dot" id="live-dot"></span>
+            <span id="market-timestamp">Loading market data...</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="controls-group">
+        <div class="segmented" id="range-selector" role="group" aria-label="Timeframe">
+          <button type="button" data-range="1D">1D</button>
+          <button type="button" data-range="1W">1W</button>
+          <button type="button" data-range="1M">1M</button>
+          <button type="button" data-range="3M">3M</button>
+          <button type="button" data-range="YTD" class="active">YTD</button>
+          <button type="button" data-range="1Y">1Y</button>
+        </div>
+
+        <button type="button" class="btn btn-ghost" id="auto-refresh-btn" title="Toggle auto-refresh every 60 seconds">
+          Auto: <span id="auto-refresh-state">ON (60s)</span>
+        </button>
+        <button type="button" class="btn btn-secondary" id="refresh-btn">Refresh</button>
+        <button type="button" class="btn btn-primary" id="open-add-modal-btn">+ Add Ticker</button>
+      </div>
+    </header>
+
+    <div id="error-banner" class="error-banner hidden"></div>
+
+    <!-- Hero KPI Cards -->
+    <section class="kpi-grid" id="kpi-grid">
+      <article class="card kpi-card">
+        <div class="kpi-label">AI Composite (Equal-Wt)</div>
+        <div class="kpi-main" id="kpi-eq-1d">--</div>
+        <div class="kpi-sub" id="kpi-eq-sub">Loading...</div>
+      </article>
+      <article class="card kpi-card">
+        <div class="kpi-label">AI Composite (Cap-Wt)</div>
+        <div class="kpi-main" id="kpi-cap-1d">--</div>
+        <div class="kpi-sub" id="kpi-cap-sub">Loading...</div>
+      </article>
+      <article class="card kpi-card">
+        <div class="kpi-label">Constituent Breadth (1D)</div>
+        <div class="kpi-main" id="kpi-breadth-main">--</div>
+        <div class="kpi-sub" id="kpi-breadth-sub">Loading...</div>
+      </article>
+      <article class="card kpi-card">
+        <div class="kpi-label">Market Benchmarks (1D / Range)</div>
+        <div class="bench-list" id="kpi-benchmarks">Loading...</div>
+      </article>
+    </section>
+
+    <!-- Primary Chart + Unusual Moves -->
+    <section class="main-grid">
+      <article class="card chart-card">
+        <div class="card-header">
+          <div>
+            <h2 id="main-chart-title">Composite &amp; Sector Performance</h2>
+            <p class="card-hint" id="main-chart-subtitle">Cumulative return (%) vs benchmarks</p>
+          </div>
+          <div class="series-legend" id="chart-legend"></div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="main-chart"></canvas>
+          <div id="main-tooltip" class="chart-tooltip hidden"></div>
+        </div>
+      </article>
+
+      <article class="card radar-card">
+        <div class="card-header">
+          <div>
+            <h2>Unusual Moves &amp; Volume</h2>
+            <p class="card-hint">|1D| &ge; 3%, |Z| &ge; 2&sigma;, or Vol &ge; 1.5x</p>
+          </div>
+        </div>
+        <div class="unusual-list" id="unusual-list">
+          <div class="empty-state">Scanning tickers...</div>
+        </div>
+      </article>
+    </section>
+
+    <!-- Sector Breakdown Cards -->
+    <section class="section-block">
+      <div class="section-header">
+        <div>
+          <h2>Sector Breakdown</h2>
+          <p class="card-hint">Click any sector card to filter the watchlist below</p>
+        </div>
+        <div class="segmented" id="sector-weight-toggle">
+          <button type="button" data-weight="equal" class="active">Equal-Wt</button>
+          <button type="button" data-weight="cap">Cap-Wt</button>
+        </div>
+      </div>
+      <div class="sector-grid" id="sector-grid"></div>
+    </section>
+
+    <!-- Correlation & Sector Comparison -->
+    <section class="analytics-grid">
+      <article class="card">
+        <div class="card-header">
+          <div>
+            <h2>Sector Return Correlation</h2>
+            <p class="card-hint" id="corr-window-label">Daily return correlation matrix</p>
+          </div>
+        </div>
+        <div class="corr-wrap" id="corr-matrix"></div>
+      </article>
+
+      <article class="card">
+        <div class="card-header">
+          <div>
+            <h2 id="bar-chart-title">Sector &amp; Benchmark Comparison</h2>
+            <p class="card-hint">Return (%) for active timeframe</p>
+          </div>
+        </div>
+        <div class="bar-wrap" id="sector-bars"></div>
+      </article>
+    </section>
+
+    <!-- Full Watchlist Table -->
+    <section class="card table-card">
+      <div class="table-toolbar">
+        <div>
+          <h2>Market Watchlist &amp; Screener</h2>
+          <p class="card-hint">Click any row for historical chart &amp; detailed metrics</p>
+        </div>
+        <div class="table-filters">
+          <input type="search" id="search-input" placeholder="Search symbol or company..." aria-label="Search tickers" />
+          <label class="checkbox-pill">
+            <input type="checkbox" id="unusual-only-toggle" />
+            <span>Unusual Only</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="filter-pills" id="sector-filter-pills"></div>
+
+      <div class="table-scroll">
+        <table class="data-table" id="watchlist-table">
+          <thead>
+            <tr>
+              <th data-sort="symbol">Ticker</th>
+              <th data-sort="sector_name">Sector</th>
+              <th data-sort="price" class="num">Price</th>
+              <th data-sort="ret_1d" class="num">1D %</th>
+              <th data-sort="ret_1w" class="num">1W %</th>
+              <th data-sort="ret_1m" class="num">1M %</th>
+              <th data-sort="ret_3m" class="num">3M %</th>
+              <th data-sort="ret_ytd" class="num">YTD %</th>
+              <th data-sort="ret_1y" class="num">1Y %</th>
+              <th data-sort="vol_ratio" class="num">Vol / 20D</th>
+              <th data-sort="range_52w_pct">52W Range</th>
+              <th>30D Trend</th>
+              <th data-sort="market_cap" class="num">Mkt Cap</th>
+              <th class="num">Flags / Action</th>
+            </tr>
+          </thead>
+          <tbody id="watchlist-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Ticker Detail Modal -->
+  <div id="detail-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-panel modal-wide">
+      <div class="modal-header">
+        <div>
+          <h3 id="detail-title">NVDA</h3>
+          <p id="detail-subtitle" class="card-hint"></p>
+        </div>
+        <div class="modal-actions">
+          <div class="segmented" id="detail-range-selector">
+            <button type="button" data-range="1D">1D</button>
+            <button type="button" data-range="1W">1W</button>
+            <button type="button" data-range="1M">1M</button>
+            <button type="button" data-range="3M" class="active">3M</button>
+            <button type="button" data-range="YTD">YTD</button>
+            <button type="button" data-range="1Y">1Y</button>
+          </div>
+          <button type="button" class="btn btn-ghost" id="close-detail-btn">&times;</button>
+        </div>
+      </div>
+      <div class="detail-stats" id="detail-stats"></div>
+      <div class="detail-chart-wrap">
+        <canvas id="detail-chart"></canvas>
+        <div id="detail-tooltip" class="chart-tooltip hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Ticker Modal -->
+  <div id="add-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3>Manage Watchlist</h3>
+        <button type="button" class="btn btn-ghost" id="close-add-btn">&times;</button>
+      </div>
+      <form id="add-ticker-form" class="form-stack">
+        <label>
+          <span>Ticker Symbol</span>
+          <input type="text" id="new-symbol-input" placeholder="e.g., ORCL, NBIS, ANET" maxlength="12" required />
+        </label>
+        <label>
+          <span>Sector Bucket</span>
+          <select id="new-sector-select">
+            <option value="core_ai">Core AI &amp; Hyperscalers</option>
+            <option value="semis">Semiconductors &amp; Equipment</option>
+            <option value="infra_power">Data Center Infra &amp; Power</option>
+            <option value="software_robotics">AI Software, Cloud &amp; Robotics</option>
+            <option value="benchmarks">Benchmarks &amp; Sector ETFs</option>
+          </select>
+        </label>
+        <div id="add-form-error" class="form-error hidden"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" id="reset-watchlist-btn">Reset Defaults</button>
+          <button type="submit" class="btn btn-primary" id="submit-add-btn">Add Ticker</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="static/charts.js"></script>
+  <script src="static/app.js"></script>
+</body>
+</html>
