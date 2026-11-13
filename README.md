@@ -32,7 +32,7 @@ This project includes a static exporter ([scripts/export_static.py](scripts/expo
 
 1. Push this repository to GitHub (default branch `main` or `master`).
 2. In your GitHub repository go to **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions**.
-3. The workflow runs on push, manually via **Actions → workflow_dispatch**, and every 30 minutes on weekdays during US market hours (`13:00–21:59 UTC`) to refresh snapshots automatically.
+3. The workflow runs on push, manually via **Actions → workflow_dispatch**, and every 2 hours on weekdays during US market hours (`30 14,16,18,20 * * 1-5` UTC) to refresh snapshots automatically.
 
 You can also build the static bundle locally into `dist/`:
 
