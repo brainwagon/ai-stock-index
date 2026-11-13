@@ -13,6 +13,7 @@ from app.analytics import (
     compute_return_pct,
     compute_sector_correlation,
     compute_sector_summaries,
+    compute_stock_checklists,
     compute_ticker_snapshot,
 )
 from app.sectors import SECTOR_META
@@ -221,3 +222,13 @@ def test_regime_monitor_detects_unwind_and_froth() -> None:
     assert reg["unwind_label"] == "Structural Unwind"
     assert len(reg["froth_signals"]) == 5
     assert len(reg["unwind_signals"]) == 5
+
+    checklists = compute_stock_checklists(close_df, snaps, comp, reg)
+    assert "NVDA" in checklists
+    assert "^GSPC" not in checklists
+    nvda = checklists["NVDA"]
+    assert nvda["metrics"]["forward_pe"] == 42.0
+    assert nvda["metrics"]["drawdown_52w_pct"] <= -25.0
+    assert len(nvda["supportive_factors"]) >= 1
+    assert len(nvda["risk_factors"]) >= 2
+    assert len(nvda["verify_items"]) == 4

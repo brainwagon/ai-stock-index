@@ -38,6 +38,13 @@
       </div>
     </header>
 
+    <aside class="disclaimer-banner" role="note" aria-label="Disclaimer">
+      <div class="disclaimer-title">Disclaimer &mdash; Experimental Tool &bull; Not Financial Advice</div>
+      <p>
+        This page does <strong>not</strong> represent financial, investment, or trading advice, and the data, calculations, and indicators shown have <strong>not been audited for accuracy</strong>, completeness, or timeliness. It was created merely as an experiment to help explore and understand the broader environment of AI and adjacent stocks, and should <strong>not</strong> form the basis of any investment decisions.
+      </p>
+    </aside>
+
     <div id="error-banner" class="error-banner hidden"></div>
 
     <!-- Hero KPI Cards -->
@@ -124,6 +131,44 @@
         </div>
       </div>
       <div class="regime-caveat" id="regime-caveat"></div>
+    </section>
+
+    <!-- Single-Stock Signal & Risk Checklist (Defaults to NVDA) -->
+    <section class="card checklist-card" id="checklist-section">
+      <div class="checklist-header">
+        <div class="checklist-intro">
+          <div class="checklist-title-row">
+            <h2 id="checklist-title">NVDA Signal &amp; Risk Checklist</h2>
+            <span class="badge badge-neutral">Informational Only · Not Financial Advice</span>
+          </div>
+          <p class="regime-summary" id="checklist-summary">Evaluating valuation, trend, volatility, and risk factors...</p>
+        </div>
+        <div class="checklist-picker">
+          <label for="checklist-ticker-select">Inspect Stock</label>
+          <select id="checklist-ticker-select" aria-label="Select stock for checklist"></select>
+        </div>
+      </div>
+
+      <div class="checklist-metrics" id="checklist-metrics"></div>
+
+      <div class="checklist-columns">
+        <div class="regime-col">
+          <div class="regime-col-title" style="color: var(--pos)">Supportive Signals</div>
+          <p class="regime-col-desc">Technical, relative-strength, or valuation factors currently in the stock's favor.</p>
+          <ul class="factor-list" id="checklist-supportive"></ul>
+        </div>
+        <div class="regime-col">
+          <div class="regime-col-title" style="color: var(--neg)">Risk &amp; Caution Factors</div>
+          <p class="regime-col-desc">Trend, valuation, volatility, or macro AI regime headwinds to weigh before buying.</p>
+          <ul class="factor-list" id="checklist-risks"></ul>
+        </div>
+        <div class="regime-col">
+          <div class="regime-col-title">Verify Before Deciding</div>
+          <p class="regime-col-desc">Fundamental &amp; personal factors that market price feeds alone cannot measure.</p>
+          <ul class="factor-list" id="checklist-verify"></ul>
+        </div>
+      </div>
+      <div class="regime-caveat" id="checklist-disclaimer"></div>
     </section>
 
     <!-- Primary Chart + Unusual Moves -->

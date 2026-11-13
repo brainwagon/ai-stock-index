@@ -28,6 +28,7 @@
     data: null,
     detailSymbol: null,
     detailRange: "3M",
+    checklistSymbol: "NVDA",
   };
 
   const el = {
@@ -54,6 +55,15 @@
     frothSignals: document.getElementById("froth-signals"),
     unwindSignals: document.getElementById("unwind-signals"),
     regimeCaveat: document.getElementById("regime-caveat"),
+    checklistSection: document.getElementById("checklist-section"),
+    checklistTitle: document.getElementById("checklist-title"),
+    checklistSummary: document.getElementById("checklist-summary"),
+    checklistSelect: document.getElementById("checklist-ticker-select"),
+    checklistMetrics: document.getElementById("checklist-metrics"),
+    checklistSupportive: document.getElementById("checklist-supportive"),
+    checklistRisks: document.getElementById("checklist-risks"),
+    checklistVerify: document.getElementById("checklist-verify"),
+    checklistDisclaimer: document.getElementById("checklist-disclaimer"),
     mainChartTitle: document.getElementById("main-chart-title"),
     mainChartSubtitle: document.getElementById("main-chart-subtitle"),
     chartLegend: document.getElementById("chart-legend"),
@@ -211,6 +221,7 @@
     renderHeaderTimestamp();
     renderKpis();
     renderRegimeMonitor();
+    renderStockChecklist();
     renderPrimaryChart();
     renderUnusualMoves();
     renderSectorCards();
@@ -294,6 +305,69 @@
 
     el.frothSignals.innerHTML = renderSignalList(reg.froth_signals);
     el.unwindSignals.innerHTML = renderSignalList(reg.unwind_signals);
+  }
+
+  function renderStockChecklist() {
+    const map = state.data.stock_checklists;
+    const symbols = map ? Object.keys(map) : [];
+    if (!symbols.length) {
+      el.checklistSection.classList.add("hidden");
+      return;
+    }
+    el.checklistSection.classList.remove("hidden");
+    if (!map[state.checklistSymbol]) {
+      state.checklistSymbol = map.NVDA ? "NVDA" : symbols[0];
+    }
+
+    el.checklistSelect.innerHTML = symbols
+      .map((sym) => {
+        const selected = sym === state.checklistSymbol ? "selected" : "";
+        return `<option value="${escapeHtml(sym)}" ${selected}>${escapeHtml(sym)} — ${escapeHtml(map[sym].name)}</option>`;
+      })
+      .join("");
+
+    const item = map[state.checklistSymbol];
+    const m = item.metrics || {};
+    el.checklistTitle.textContent = `${item.symbol} (${item.name}) Signal & Risk Checklist`;
+    el.checklistSummary.textContent = item.summary_text || "";
+    el.checklistDisclaimer.textContent = item.disclaimer || "";
+
+    const fmtSigned = (v, suffix = "%") => {
+      if (v === null || v === undefined || !Number.isFinite(v)) return "--";
+      const cls = v >= 0 ? "pos" : "neg";
+      const sign = v > 0 ? "+" : "";
+      return `<span class="${cls}">${sign}${v.toFixed(1)}${suffix}</span>`;
+    };
+
+    el.checklistMetrics.innerHTML = `
+      <div class="detail-stat-box">
+        <div class="detail-stat-label">Price (1D / 1Y)</div>
+        <div class="detail-stat-val">${fmtPrice(item.price, item.symbol)} · ${fmtPct(item.ret_1d)} / ${fmtSigned(item.ret_1y)}</div>
+      </div>
+      <div class="detail-stat-box">
+        <div class="detail-stat-label">Fwd P/E (vs AI Med)</div>
+        <div class="detail-stat-val">${m.forward_pe ? m.forward_pe.toFixed(1) + "x" : "--"} <span class="muted-val" style="font-size:11px">(med ${m.ai_median_fpe ? m.ai_median_fpe.toFixed(1) + "x" : "--"})</span></div>
+      </div>
+      <div class="detail-stat-box">
+        <div class="detail-stat-label">vs 50D / 200D SMA</div>
+        <div class="detail-stat-val">${fmtSigned(m.pct_vs_50d)} / ${fmtSigned(m.pct_vs_200d)}</div>
+      </div>
+      <div class="detail-stat-box">
+        <div class="detail-stat-label">52W Peak Drawdown</div>
+        <div class="detail-stat-val">${fmtSigned(m.drawdown_52w_pct)}</div>
+      </div>
+      <div class="detail-stat-box">
+        <div class="detail-stat-label">1M vs NDX / 30D Vol</div>
+        <div class="detail-stat-val">${fmtSigned(m.vs_ndx_1m)} · ${m.vol_30d_ann ? m.vol_30d_ann.toFixed(1) + "%" : "--"}</div>
+      </div>
+    `;
+
+    const renderList = (arr) =>
+      (arr || []).map((txt) => `<li>${escapeHtml(txt)}</li>`).join("") || "<li>No signals available.</li>";
+
+    el.checklistSupportive.innerHTML = renderList(item.supportive_factors);
+    el.checklistRisks.innerHTML = renderList(item.risk_factors);
+    el.checklistVerify.innerHTML = renderList(item.verify_items);
   }
 
   function renderHeaderTimestamp() {
@@ -796,6 +870,11 @@
     el.unusualOnlyToggle.addEventListener("change", () => {
       state.unusualOnly = el.unusualOnlyToggle.checked;
       renderWatchlistTable();
+    });
+
+    el.checklistSelect.addEventListener("change", () => {
+      state.checklistSymbol = el.checklistSelect.value;
+      renderStockChecklist();
     });
 
     document.querySelectorAll("#watchlist-table thead th[data-sort]").forEach((th) => {

@@ -18,6 +18,7 @@ from app.analytics import (
     compute_regime_monitor,
     compute_sector_correlation,
     compute_sector_summaries,
+    compute_stock_checklists,
     compute_ticker_snapshot,
     safe_float,
 )
@@ -233,6 +234,13 @@ class MarketDataService:
             sector_meta=SECTOR_META,
             live_prices=live_prices,
         )
+        stock_checklists = compute_stock_checklists(
+            close_df=close_df,
+            snapshots=snapshots,
+            composite=composite,
+            regime=regime,
+            live_prices=live_prices,
+        )
         chart = build_historical_chart_data(
             close_df=close_df,
             snapshots=snapshots,
@@ -272,6 +280,7 @@ class MarketDataService:
             "sector_meta": list(SECTOR_META.values()),
             "composite": composite,
             "regime": regime,
+            "stock_checklists": stock_checklists,
             "sectors": sectors,
             "tickers": snapshots,
             "unusual_moves": unusual_moves,

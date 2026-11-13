@@ -274,6 +274,27 @@ def _weighted_return_series(
     return dates, cum_values
 
 
+def _prepare_daily_close_frame(
+    close_df: pd.DataFrame,
+    live_prices: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Normalize a multi-ticker daily DataFrame index to tz-naive sorted dates with optional live prices."""
+    if close_df is None or close_df.empty:
+        return pd.DataFrame()
+    df = close_df.copy()
+    idx = pd.to_datetime(df.index)
+    if idx.tz is not None:
+        idx = idx.tz_convert("America/New_York").tz_localize(None)
+    df.index = idx.normalize()
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    if live_prices and not df.empty:
+        last_idx = df.index[-1]
+        for sym, px in live_prices.items():
+            if sym in df.columns and px is not None:
+                df.at[last_idx, sym] = px
+    return df
+
+
 def build_historical_chart_data(
     close_df: pd.DataFrame,
     snapshots: list[dict[str, Any]],
@@ -282,21 +303,9 @@ def build_historical_chart_data(
     live_prices: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Compute composite indices, sector sub-indices, and benchmark curves for range_key."""
-    if close_df.empty:
+    df = _prepare_daily_close_frame(close_df, live_prices)
+    if df.empty:
         return {"dates": [], "series": []}
-
-    df = close_df.copy()
-    idx = pd.to_datetime(df.index)
-    if idx.tz is not None:
-        idx = idx.tz_convert("America/New_York").tz_localize(None)
-    df.index = idx.normalize()
-    df = df[~df.index.duplicated(keep="last")].sort_index()
-
-    if live_prices and not df.empty:
-        last_idx = df.index[-1]
-        for sym, px in live_prices.items():
-            if sym in df.columns and px is not None:
-                df.at[last_idx, sym] = px
 
     anchor = get_anchor_date(df.index, range_key)
     if anchor is None:
@@ -1074,3 +1083,187 @@ def compute_regime_monitor(
         "froth_signals": froth_signals,
         "unwind_signals": unwind_signals,
     }
+
+
+def compute_stock_checklists(
+    close_df: pd.DataFrame,
+    snapshots: list[dict[str, Any]],
+    composite: dict[str, Any],
+    regime: dict[str, Any],
+    live_prices: dict[str, float] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build balanced, informational signal & risk checklists for each non-benchmark stock."""
+    df = _prepare_daily_close_frame(close_df, live_prices)
+    stocks = [s for s in snapshots if not s["is_benchmark"]]
+
+    ai_med_fpe = regime.get("median_forward_pe")
+    unwind_score = regime.get("unwind_score", 0)
+    unwind_label = regime.get("unwind_label", "Mixed")
+    froth_score = regime.get("froth_score", 0)
+
+    benches = composite.get("benchmarks", {})
+    ndx_bench = benches.get("^NDX") or benches.get("QQQ")
+    ndx_label = "NASDAQ 100" if benches.get("^NDX") else "QQQ"
+    smh_bench = benches.get("SMH")
+
+    # Compute per-sector median forward P/E
+    sector_fpes: dict[str, float] = {}
+    for sec_id in {s["sector"] for s in stocks}:
+        vals = [s["forward_pe"] for s in stocks if s["sector"] == sec_id and s.get("forward_pe") is not None]
+        if vals:
+            sector_fpes[sec_id] = round(float(np.median(vals)), 1)
+
+    checklists: dict[str, dict[str, Any]] = {}
+    for s in stocks:
+        sym = s["symbol"]
+        price = s.get("price")
+        fpe = s.get("forward_pe")
+        ps = s.get("price_to_sales")
+        sec_fpe = sector_fpes.get(s["sector"])
+        vol_30d = s.get("vol_30d_ann")
+        vol_ratio = s.get("vol_ratio")
+        ret_1m = s.get("ret_1m")
+        ret_1y = s.get("ret_1y")
+
+        pct_vs_50d: float | None = None
+        pct_vs_200d: float | None = None
+        drawdown_52w: float | None = None
+        if not df.empty and sym in df.columns:
+            series = pd.to_numeric(df[sym], errors="coerce").dropna()
+            if not series.empty:
+                cur_px = float(series.iloc[-1])
+                if len(series) >= 50:
+                    sma50 = float(series.iloc[-50:].mean())
+                    if sma50 > 0:
+                        pct_vs_50d = round((cur_px / sma50 - 1.0) * 100.0, 2)
+                if len(series) >= 200:
+                    sma200 = float(series.iloc[-200:].mean())
+                    if sma200 > 0:
+                        pct_vs_200d = round((cur_px / sma200 - 1.0) * 100.0, 2)
+                one_y_cut = series.index[-1] - timedelta(days=365)
+                win_1y = series[series.index >= one_y_cut]
+                if not win_1y.empty:
+                    peak_1y = float(win_1y.max())
+                    if peak_1y > 0:
+                        drawdown_52w = round((cur_px / peak_1y - 1.0) * 100.0, 2)
+
+        vs_ndx_1m = round(ret_1m - ndx_bench["ret_1m"], 2) if (ret_1m is not None and ndx_bench and ndx_bench.get("ret_1m") is not None) else None
+        vs_smh_1m = round(ret_1m - smh_bench["ret_1m"], 2) if (ret_1m is not None and smh_bench and smh_bench.get("ret_1m") is not None) else None
+
+        supportive: list[str] = []
+        risks: list[str] = []
+
+        # Valuation assessment
+        if fpe is not None and ai_med_fpe is not None:
+            if fpe <= ai_med_fpe * 0.85:
+                supportive.append(
+                    f"Forward P/E ({fpe:.1f}x) trades below the AI peer median ({ai_med_fpe:.1f}x)."
+                )
+            elif fpe >= max(38.0, ai_med_fpe * 1.35):
+                risks.append(
+                    f"Forward P/E ({fpe:.1f}x) carries a steep premium above the AI median ({ai_med_fpe:.1f}x)."
+                )
+        if ps is not None and ps >= 15.0:
+            risks.append(f"High trailing Price/Sales ({ps:.1f}x) leaves less room for growth deceleration.")
+
+        # Trend vs 50D / 200D SMA
+        if pct_vs_50d is not None and pct_vs_200d is not None:
+            if pct_vs_50d > 0 and pct_vs_200d > 0:
+                supportive.append(
+                    f"Trend intact: trading above both 50D ({pct_vs_50d:+.1f}%) and 200D ({pct_vs_200d:+.1f}%) averages."
+                )
+            elif pct_vs_200d > 0 and pct_vs_50d <= 0:
+                supportive.append(f"Holding long-term 200D trend ({pct_vs_200d:+.1f}% vs 200D SMA).")
+                risks.append(f"Short-term momentum has softened ({pct_vs_50d:+.1f}% below 50D SMA).")
+            else:
+                risks.append(
+                    f"Downtrend warning: below both 50D ({pct_vs_50d:+.1f}%) and 200D ({pct_vs_200d:+.1f}%) averages."
+                )
+
+        # Drawdown & 1Y relative strength
+        if drawdown_52w is not None:
+            if drawdown_52w <= -20.0:
+                risks.append(f"Deep drawdown ({drawdown_52w:.1f}% off 52W peak) indicates sustained selling pressure.")
+            elif drawdown_52w <= -8.0:
+                supportive.append(
+                    f"Pulled back {abs(drawdown_52w):.1f}% from its 52W high, reducing near-term chase risk if fundamentals hold."
+                )
+
+        if ret_1y is not None and ret_1y >= 15.0:
+            supportive.append(f"Strong 1-year performance ({ret_1y:+.1f}%).")
+        elif ret_1y is not None and ret_1y < 0:
+            risks.append(f"Negative 1-year return ({ret_1y:+.1f}%).")
+
+        if vs_ndx_1m is not None:
+            if vs_ndx_1m >= 2.0:
+                supportive.append(f"Outperforming {ndx_label} over the past month ({vs_ndx_1m:+.1f}%).")
+            elif vs_ndx_1m <= -3.0:
+                risks.append(f"Lagging {ndx_label} over the past month ({vs_ndx_1m:+.1f}%).")
+
+        # Volatility & macro AI regime context
+        if vol_30d is not None and vol_30d >= 45.0:
+            risks.append(f"Elevated 30D realized volatility ({vol_30d:.1f}% annualized) increases swing/gap risk.")
+        if vol_ratio is not None and vol_ratio >= 1.5 and (s.get("ret_1d") or 0) < 0:
+            risks.append(f"Heavy down-day volume today ({vol_ratio:.2f}x 20D avg) signals active selling.")
+
+        if unwind_score >= 50:
+            risks.append(
+                f"Macro AI regime reads {unwind_label} ({unwind_score}/100) — sector-wide selling can weigh on individual leaders."
+            )
+        elif froth_score >= 50:
+            risks.append(
+                f"Macro AI Froth is elevated ({froth_score}/100), raising sensitivity to any earnings or capex miss."
+            )
+
+        if not supportive:
+            supportive.append("No standout technical or valuation tailwinds flagged by current price data.")
+        if not risks:
+            risks.append("No major technical or volatility red flags in current price data; verify fundamentals before acting.")
+
+        summary_bits = []
+        if price is not None:
+            summary_bits.append(f"{sym} is at ${price:,.2f}")
+        if fpe is not None and ai_med_fpe is not None:
+            summary_bits.append(f"trading at {fpe:.1f}x forward P/E (AI median {ai_med_fpe:.1f}x)")
+        if drawdown_52w is not None:
+            summary_bits.append(f"{drawdown_52w:+.1f}% from its 52-week high")
+        if pct_vs_50d is not None:
+            summary_bits.append(f"and {pct_vs_50d:+.1f}% vs its 50-day average")
+        summary_text = ", ".join(summary_bits) + "." if summary_bits else f"Signal summary for {sym}."
+
+        verify_items = [
+            "Upcoming earnings date & whether hyperscaler customers are raising or slowing AI capex.",
+            "Data-center revenue growth, gross margin trajectory, and new product ramp/supply constraints.",
+            "Customer concentration and export/tariff or regulatory headwinds not reflected in historical prices.",
+            "Your own time horizon, existing AI/tech portfolio concentration, and tolerance for drawdowns.",
+        ]
+
+        checklists[sym] = {
+            "symbol": sym,
+            "name": s["name"],
+            "sector_name": s["sector_name"],
+            "price": price,
+            "ret_1d": s.get("ret_1d"),
+            "ret_1m": ret_1m,
+            "ret_ytd": s.get("ret_ytd"),
+            "ret_1y": ret_1y,
+            "metrics": {
+                "forward_pe": fpe,
+                "sector_median_fpe": sec_fpe,
+                "ai_median_fpe": ai_med_fpe,
+                "price_to_sales": ps,
+                "pct_vs_50d": pct_vs_50d,
+                "pct_vs_200d": pct_vs_200d,
+                "drawdown_52w_pct": drawdown_52w,
+                "vol_30d_ann": vol_30d,
+                "vs_ndx_1m": vs_ndx_1m,
+                "vs_smh_1m": vs_smh_1m,
+            },
+            "supportive_factors": supportive,
+            "risk_factors": risks,
+            "verify_items": verify_items,
+            "summary_text": summary_text,
+            "disclaimer": "Informational checklist only — not personalized financial or investment advice.",
+        }
+
+    return checklists
