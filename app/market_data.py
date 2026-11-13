@@ -15,6 +15,7 @@ from app.analytics import (
     build_historical_chart_data,
     build_intraday_chart_data,
     compute_composite_summary,
+    compute_regime_monitor,
     compute_sector_correlation,
     compute_sector_summaries,
     compute_ticker_snapshot,
@@ -63,6 +64,18 @@ def _fetch_fast_quote(symbol: str) -> tuple[str, dict[str, Any]]:
         return symbol, {}
 
 
+def _fetch_valuation(symbol: str) -> tuple[str, dict[str, Any]]:
+    """Fetch forward P/E and P/S valuation multiples for a single equity."""
+    try:
+        info = yf.Ticker(symbol).info or {}
+        return symbol, {
+            "forward_pe": safe_float(info.get("forwardPE")),
+            "price_to_sales": safe_float(info.get("priceToSalesTrailing12Months")),
+        }
+    except Exception:
+        return symbol, {}
+
+
 class MarketDataService:
     """Thread-safe market data loader with multi-tier TTL caching."""
 
@@ -71,6 +84,7 @@ class MarketDataService:
         self._daily_ttl = daily_ttl
         self._live_ttl = live_ttl
         self._daily_cache: dict[str, Any] = {"ts": 0.0, "symbols": (), "close": pd.DataFrame(), "volume": pd.DataFrame()}
+        self._val_cache: dict[str, Any] = {"ts": 0.0, "symbols": (), "valuations": {}}
         self._live_cache: dict[str, Any] = {"ts": 0.0, "symbols": (), "quotes": {}, "intra_close": pd.DataFrame()}
 
     def invalidate_cache(self, include_daily: bool = False) -> None:
@@ -79,6 +93,7 @@ class MarketDataService:
             self._live_cache["ts"] = 0.0
             if include_daily:
                 self._daily_cache["ts"] = 0.0
+                self._val_cache["ts"] = 0.0
 
     def _get_daily_frames(self, symbols: list[str], force: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
         key = tuple(symbols)
@@ -111,6 +126,30 @@ class MarketDataService:
                 "volume": vol_df,
             }
         return close_df, vol_df
+
+    def _get_valuations(self, symbols: list[str], force: bool = False) -> dict[str, dict[str, Any]]:
+        key = tuple(symbols)
+        now = time.monotonic()
+        with self._lock:
+            if (
+                not force
+                and self._val_cache["symbols"] == key
+                and (now - self._val_cache["ts"]) < self._daily_ttl
+                and self._val_cache["valuations"]
+            ):
+                return self._val_cache["valuations"]
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(_fetch_valuation, symbols))
+        valuations = dict(results)
+
+        with self._lock:
+            self._val_cache = {
+                "ts": time.monotonic(),
+                "symbols": key,
+                "valuations": valuations,
+            }
+        return valuations
 
     def _get_live_data(self, symbols: list[str], force: bool = False) -> tuple[dict[str, dict[str, Any]], pd.DataFrame]:
         key = tuple(symbols)
@@ -155,8 +194,14 @@ class MarketDataService:
 
         watchlist = load_watchlist()
         symbols = [item["symbol"] for item in watchlist]
+        stock_symbols = [
+            item["symbol"]
+            for item in watchlist
+            if not SECTOR_META.get(item["sector"], {}).get("is_benchmark", False)
+        ]
 
         close_df, vol_df = self._get_daily_frames(symbols, force=force_refresh)
+        valuations = self._get_valuations(stock_symbols, force=False)
         quotes, intra_close = self._get_live_data(symbols, force=force_refresh)
 
         snapshots: list[dict[str, Any]] = []
@@ -165,12 +210,13 @@ class MarketDataService:
             sym = item["symbol"]
             c_series = close_df[sym] if sym in close_df.columns else pd.Series(dtype=float)
             v_series = vol_df[sym] if sym in vol_df.columns else pd.Series(dtype=float)
+            merged_quote = {**quotes.get(sym, {}), **valuations.get(sym, {})}
             snap = compute_ticker_snapshot(
                 ticker_cfg=item,
                 sector_meta=SECTOR_META,
                 close_series=c_series,
                 volume_series=v_series,
-                fast_quote=quotes.get(sym),
+                fast_quote=merged_quote,
             )
             snapshots.append(snap)
             if snap["price"] is not None:
@@ -178,6 +224,15 @@ class MarketDataService:
 
         composite = compute_composite_summary(snapshots)
         sectors = compute_sector_summaries(snapshots, SECTOR_META)
+        regime = compute_regime_monitor(
+            close_df=close_df,
+            vol_df=vol_df,
+            snapshots=snapshots,
+            composite=composite,
+            sector_summaries=sectors,
+            sector_meta=SECTOR_META,
+            live_prices=live_prices,
+        )
         chart = build_historical_chart_data(
             close_df=close_df,
             snapshots=snapshots,
@@ -216,6 +271,7 @@ class MarketDataService:
             "range": range_key,
             "sector_meta": list(SECTOR_META.values()),
             "composite": composite,
+            "regime": regime,
             "sectors": sectors,
             "tickers": snapshots,
             "unusual_moves": unusual_moves,
@@ -234,11 +290,17 @@ class MarketDataService:
 
         symbols = [w["symbol"] for w in watchlist]
         if sym in symbols:
+            stock_symbols = [
+                w["symbol"]
+                for w in watchlist
+                if not SECTOR_META.get(w["sector"], {}).get("is_benchmark", False)
+            ]
             close_df, vol_df = self._get_daily_frames(symbols)
+            valuations = self._get_valuations(stock_symbols)
             quotes, intra_close = self._get_live_data(symbols)
             c_series = close_df[sym] if sym in close_df.columns else pd.Series(dtype=float)
             v_series = vol_df[sym] if sym in vol_df.columns else pd.Series(dtype=float)
-            quote = quotes.get(sym, {})
+            quote = {**quotes.get(sym, {}), **valuations.get(sym, {})}
             intra_series = intra_close[sym] if sym in intra_close.columns else pd.Series(dtype=float)
         else:
             raw = yf.download([sym], period="2y", interval="1d", auto_adjust=True, progress=False)

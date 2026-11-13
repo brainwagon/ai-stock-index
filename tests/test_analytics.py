@@ -9,6 +9,7 @@ from app.analytics import (
     build_historical_chart_data,
     build_intraday_chart_data,
     compute_composite_summary,
+    compute_regime_monitor,
     compute_return_pct,
     compute_sector_correlation,
     compute_sector_summaries,
@@ -161,3 +162,62 @@ def test_intraday_chart_and_correlations() -> None:
     assert "NDX" in corr["labels"]
     assert "S&P 500" in corr["labels"]
     assert len(corr["matrix"]) == len(corr["labels"])
+
+
+def test_regime_monitor_detects_unwind_and_froth() -> None:
+    dates = pd.date_range("2025-10-01", "2026-11-13", freq="B")
+    n = len(dates)
+    # Construct a blow-off peak followed by a >25% unwind across all 4 AI sectors
+    peak_idx = n - 70
+    ai_curve = np.concatenate([
+        np.linspace(100.0, 200.0, peak_idx),
+        np.linspace(200.0, 140.0, n - peak_idx),
+    ])
+    spx_curve = np.linspace(5000.0, 5600.0, n)
+
+    close_df = pd.DataFrame(
+        {
+            "NVDA": ai_curve * 1.0,
+            "AMD": ai_curve * 0.9,
+            "VRT": ai_curve * 0.8,
+            "SNOW": ai_curve * 0.7,
+            "^GSPC": spx_curve,
+        },
+        index=dates,
+    )
+    vol_arr = np.full(n, 20_000_000.0)
+    # Make down days higher volume in trailing 20 days
+    vol_arr[-21:] = 35_000_000.0
+    vol_df = pd.DataFrame(
+        {sym: vol_arr.copy() for sym in close_df.columns},
+        index=dates,
+    )
+
+    configs = [
+        {"symbol": "NVDA", "name": "NVIDIA", "sector": "core_ai"},
+        {"symbol": "AMD", "name": "AMD", "sector": "semis"},
+        {"symbol": "VRT", "name": "Vertiv", "sector": "infra_power"},
+        {"symbol": "SNOW", "name": "Snowflake", "sector": "software_robotics"},
+        {"symbol": "^GSPC", "name": "S&P 500", "sector": "benchmarks"},
+    ]
+    snaps = [
+        compute_ticker_snapshot(
+            c,
+            SECTOR_META,
+            close_df[c["symbol"]],
+            vol_df[c["symbol"]],
+            {"market_cap": 1e12 if c["symbol"] != "^GSPC" else None, "forward_pe": 42.0},
+        )
+        for c in configs
+    ]
+    comp = compute_composite_summary(snaps)
+    secs = compute_sector_summaries(snaps, SECTOR_META)
+    reg = compute_regime_monitor(close_df, vol_df, snaps, comp, secs, SECTOR_META)
+
+    assert reg["drawdown_cap_pct"] <= -25.0
+    assert reg["pct_above_50d"] == 0
+    assert reg["median_forward_pe"] == 42.0
+    assert reg["unwind_score"] >= 75
+    assert reg["unwind_label"] == "Structural Unwind"
+    assert len(reg["froth_signals"]) == 5
+    assert len(reg["unwind_signals"]) == 5

@@ -63,6 +63,69 @@
       </article>
     </section>
 
+    <!-- Bubble & Regime Monitor -->
+    <section class="card regime-card" id="regime-section">
+      <div class="regime-header">
+        <div class="regime-intro">
+          <h2>AI Bubble &amp; Regime Monitor</h2>
+          <div class="regime-headline" id="regime-headline">Loading regime assessment...</div>
+          <p class="regime-summary" id="regime-summary">Evaluating market structure, breadth, volume, and valuation...</p>
+        </div>
+        <div class="regime-gauges">
+          <div class="gauge-box">
+            <div class="gauge-top">
+              <span class="gauge-label">
+                Bubble / Froth
+                <span class="tip-wrap tip-right">
+                  <button type="button" class="tip-btn" aria-label="Explain Bubble / Froth gauge">?</button>
+                  <span class="tip-popover">
+                    <strong>Bubble / Froth (0–100)</strong>
+                    <span>Combines 5 signals: 1Y AI spread vs S&amp;P 500, cross-sector crowding, speculative small-vs-mega-cap spread, realized volatility, and median forward P/E.</span>
+                    <span class="tip-sig"><strong>Significance:</strong> Scores &ge;50 warn that AI valuations and positioning are stretched, increasing downside risk if growth disappoints.</span>
+                  </span>
+                </span>
+              </span>
+              <span class="gauge-val" id="froth-label">--</span>
+            </div>
+            <div class="gauge-track"><div class="gauge-fill" id="froth-bar" style="width:0%"></div></div>
+            <div class="gauge-hint">Is the AI trade overheated?</div>
+          </div>
+          <div class="gauge-box">
+            <div class="gauge-top">
+              <span class="gauge-label">
+                Unwind / Pop Risk
+                <span class="tip-wrap tip-right">
+                  <button type="button" class="tip-btn" aria-label="Explain Unwind / Pop Risk gauge">?</button>
+                  <span class="tip-popover">
+                    <strong>Unwind / Pop Risk (0–100)</strong>
+                    <span>Combines 5 signals: 52W drawdown, 50D/200D SMA breadth, 1M &amp; 3M relative trend vs S&amp;P 500, full-stack sector contagion, and down-day volume pressure.</span>
+                    <span class="tip-sig"><strong>Significance:</strong> Scores &ge;50 indicate broad trend deterioration rather than a quick, isolated dip.</span>
+                  </span>
+                </span>
+              </span>
+              <span class="gauge-val" id="unwind-label">--</span>
+            </div>
+            <div class="gauge-track"><div class="gauge-fill" id="unwind-bar" style="width:0%"></div></div>
+            <div class="gauge-hint">Is the AI trend breaking down?</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="regime-columns">
+        <div class="regime-col">
+          <div class="regime-col-title">Froth &amp; Crowding Signals</div>
+          <p class="regime-col-desc">Checks if prices, sector crowding, volatility, and earnings multiples look stretched or bubble-like.</p>
+          <div class="signal-list" id="froth-signals"></div>
+        </div>
+        <div class="regime-col">
+          <div class="regime-col-title">Pop &amp; Unwind Signals</div>
+          <p class="regime-col-desc">Checks if selling is an isolated dip or a broad, high-volume breakdown across the whole AI stack.</p>
+          <div class="signal-list" id="unwind-signals"></div>
+        </div>
+      </div>
+      <div class="regime-caveat" id="regime-caveat"></div>
+    </section>
+
     <!-- Primary Chart + Unusual Moves -->
     <section class="main-grid">
       <article class="card chart-card">

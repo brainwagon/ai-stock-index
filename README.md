@@ -16,6 +16,7 @@ A web dashboard for monitoring live and historical performance across AI and adj
 ## Features
 
 - **Custom AI Composite Index**: Equal-weighted and market-cap-weighted composite performance vs `S&P 500 (^GSPC)`, `NASDAQ 100 (^NDX)`, `SPY`, `QQQ`, and `SMH`.
+- **AI Bubble & Regime Monitor**: Prominent dual-gauge monitor scoring **Bubble / Froth** (1Y spread vs `S&P 500`, cross-sector crowding correlation, speculative spread, realized volatility, median Forward P/E) and **Unwind / Pop Risk** (52W peak drawdown, `50D`/`200D` SMA breadth, `1M`/`3M` relative breakdown, full-stack contagion, down-day volume pressure).
 - **Multi-Timeframe Analysis**: `1D` (5-minute intraday), `1W`, `1M`, `3M`, `YTD`, and `1Y` returns.
 - **Unusual Moves & Volume Radar**: Flags equities with `|1D %| >= 3%`, `|Z-Score| >= 2.0σ`, or `Volume / 20D Avg >= 1.5x`.
 - **Sector Breakdown & Correlation Matrix**: Compare equal-weighted vs cap-weighted sector performance and daily return correlations against `NDX` and `S&P 500`.

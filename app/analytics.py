@@ -194,6 +194,11 @@ def compute_ticker_snapshot(
     if vol_ratio is not None and vol_ratio >= 1.5:
         unusual_reasons.append(f"Vol {vol_ratio:.1f}x")
 
+    fpe = safe_float(fast_quote.get("forward_pe"))
+    ps = safe_float(fast_quote.get("price_to_sales"))
+    forward_pe = round(fpe, 1) if (fpe is not None and fpe > 0) else None
+    price_to_sales = round(ps, 1) if (ps is not None and ps > 0) else None
+
     return {
         "symbol": symbol,
         "name": display_name,
@@ -204,6 +209,8 @@ def compute_ticker_snapshot(
         "price": round(price, 2) if price is not None else None,
         "prev_close": round(prev_close, 2) if prev_close is not None else None,
         "market_cap": round(market_cap) if market_cap is not None else None,
+        "forward_pe": forward_pe,
+        "price_to_sales": price_to_sales,
         "ret_1d": ret_1d,
         "ret_1w": ret_1w,
         "ret_1m": ret_1m,
@@ -649,3 +656,421 @@ def compute_sector_correlation(
         for r in range(len(labels))
     ]
     return {"labels": labels, "matrix": matrix, "window": eff_range}
+
+
+def _score_from_signals(signals: list[dict[str, Any]]) -> int:
+    """Compute a normalized 0-100 score from signal status levels."""
+    if not signals:
+        return 0
+    pts = {"normal": 0.0, "watch": 50.0, "alert": 100.0}
+    total = sum(pts.get(s.get("status", "normal"), 0.0) for s in signals)
+    return round(total / len(signals))
+
+
+def compute_regime_monitor(
+    close_df: pd.DataFrame,
+    vol_df: pd.DataFrame,
+    snapshots: list[dict[str, Any]],
+    composite: dict[str, Any],
+    sector_summaries: list[dict[str, Any]],
+    sector_meta: dict[str, dict[str, Any]],
+    live_prices: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Evaluate bubble/froth extension vs unwind/pop signals from market structure & valuation."""
+    stocks = [s for s in snapshots if not s["is_benchmark"]]
+    stock_syms = [s["symbol"] for s in stocks]
+    cap_weights = {
+        s["symbol"]: float(s["market_cap"]) if s.get("market_cap") else 1.0 for s in stocks
+    }
+
+    # Normalize daily close & volume frames
+    df = pd.DataFrame()
+    if not close_df.empty:
+        df = close_df.copy()
+        idx = pd.to_datetime(df.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert("America/New_York").tz_localize(None)
+        df.index = idx.normalize()
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        if live_prices and not df.empty:
+            last_idx = df.index[-1]
+            for sym, px in live_prices.items():
+                if sym in df.columns and px is not None:
+                    df.at[last_idx, sym] = px
+
+    vdf = pd.DataFrame()
+    if not vol_df.empty:
+        vdf = vol_df.copy()
+        v_idx = pd.to_datetime(vdf.index)
+        if v_idx.tz is not None:
+            v_idx = v_idx.tz_convert("America/New_York").tz_localize(None)
+        vdf.index = v_idx.normalize()
+        vdf = vdf[~vdf.index.duplicated(keep="last")].sort_index()
+
+    # 1) Froth / Bubble Indicators
+    spx_bench = composite.get("benchmarks", {}).get("^GSPC") or composite.get("benchmarks", {}).get("SPY")
+    spx_label = "S&P 500" if composite.get("benchmarks", {}).get("^GSPC") else "SPY"
+    cap_1y = composite.get("cap", {}).get("ret_1y")
+    spx_1y = spx_bench.get("ret_1y") if spx_bench else None
+    spread_1y = round(cap_1y - spx_1y, 2) if (cap_1y is not None and spx_1y is not None) else None
+    if spread_1y is None:
+        spread_status = "normal"
+    elif spread_1y >= 35.0:
+        spread_status = "alert"
+    elif spread_1y >= 20.0:
+        spread_status = "watch"
+    else:
+        spread_status = "normal"
+
+    # Cross-sector 3M correlation average across the 4 AI stock sectors
+    avg_sector_corr: float | None = None
+    if not df.empty:
+        anchor_3m = get_anchor_date(df.index, "3M")
+        sub_3m = df.loc[df.index >= anchor_3m] if anchor_3m is not None else df
+        rets_3m = sub_3m.pct_change().dropna(how="all")
+        sec_rets: dict[str, pd.Series] = {}
+        for sid, meta in sector_meta.items():
+            if meta.get("is_benchmark"):
+                continue
+            syms = [s["symbol"] for s in stocks if s["sector"] == sid and s["symbol"] in rets_3m.columns]
+            if syms:
+                sec_rets[sid] = rets_3m[syms].mean(axis=1)
+        if len(sec_rets) >= 2:
+            cmat = pd.DataFrame(sec_rets).corr().values
+            off_diag = [
+                float(cmat[i, j])
+                for i in range(len(cmat))
+                for j in range(i + 1, len(cmat))
+                if np.isfinite(cmat[i, j])
+            ]
+            if off_diag:
+                avg_sector_corr = round(sum(off_diag) / len(off_diag), 2)
+
+    if avg_sector_corr is None:
+        corr_status = "normal"
+    elif avg_sector_corr >= 0.80:
+        corr_status = "alert"
+    elif avg_sector_corr >= 0.65:
+        corr_status = "watch"
+    else:
+        corr_status = "normal"
+
+    # Speculative spread (Equal-Wt minus Cap-Wt 3M when Equal-Wt 3M is positive)
+    eq_3m = composite.get("equal", {}).get("ret_3m")
+    cap_3m = composite.get("cap", {}).get("ret_3m")
+    spec_spread = round(eq_3m - cap_3m, 2) if (eq_3m is not None and cap_3m is not None) else None
+    if spec_spread is None or (eq_3m is not None and eq_3m <= 0):
+        spec_status = "normal"
+    elif spec_spread >= 12.0:
+        spec_status = "alert"
+    elif spec_spread >= 6.0:
+        spec_status = "watch"
+    else:
+        spec_status = "normal"
+
+    # Average 30D annualized volatility across AI stocks
+    vols = [s["vol_30d_ann"] for s in stocks if s.get("vol_30d_ann") is not None]
+    avg_vol = round(sum(vols) / len(vols), 1) if vols else None
+    if avg_vol is None:
+        vol_status = "normal"
+    elif avg_vol >= 55.0:
+        vol_status = "alert"
+    elif avg_vol >= 42.0:
+        vol_status = "watch"
+    else:
+        vol_status = "normal"
+
+    # Median Forward P/E across AI stocks
+    fpes = [s["forward_pe"] for s in stocks if s.get("forward_pe") is not None]
+    med_fpe = round(float(np.median(fpes)), 1) if fpes else None
+    if med_fpe is None:
+        fpe_status = "normal"
+    elif med_fpe >= 40.0:
+        fpe_status = "alert"
+    elif med_fpe >= 30.0:
+        fpe_status = "watch"
+    else:
+        fpe_status = "normal"
+
+    froth_signals = [
+        {
+            "id": "ai_vs_spx_1y",
+            "label": f"AI vs {spx_label} (1Y Spread)",
+            "description": "How far the AI basket has outrun the broad market over the past year.",
+            "significance": "Extreme 1-year outperformance (+20% to +35%+) often means expectations are stretched and vulnerable to sharp mean reversion.",
+            "value_text": f"{'+' if spread_1y and spread_1y > 0 else ''}{spread_1y:.2f}%" if spread_1y is not None else "--",
+            "threshold": ">= +20% Watch / +35% Alert",
+            "status": spread_status,
+        },
+        {
+            "id": "cross_sector_corr",
+            "label": "Cross-Sector Crowding (3M Corr)",
+            "description": "Whether chips, power, and software are trading as one crowded bet.",
+            "significance": "High correlation (0.65–0.80+) shows normally distinct businesses moving in lockstep—a sign of crowded momentum that unwinds together.",
+            "value_text": f"{avg_sector_corr:.2f}" if avg_sector_corr is not None else "--",
+            "threshold": ">= 0.65 Watch / 0.80 Alert",
+            "status": corr_status,
+        },
+        {
+            "id": "spec_spread_3m",
+            "label": "Speculative Spread (Eq - Cap 3M)",
+            "description": "Whether smaller/higher-beta names are outrunning profitable mega-caps.",
+            "significance": "When smaller speculative names surge far ahead of mega-cap cash generators during rallies, risk appetite is often getting frothy.",
+            "value_text": f"{'+' if spec_spread and spec_spread > 0 else ''}{spec_spread:.2f}%" if spec_spread is not None else "--",
+            "threshold": ">= +6% Watch / +12% Alert (if >0)",
+            "status": spec_status,
+        },
+        {
+            "id": "avg_vol_30d",
+            "label": "Mean 30D Realized Vol",
+            "description": "Average annualized price swing across AI equities (high vol signals instability).",
+            "significance": "Rising volatility (>42%–55%+) signals wider daily swings, unstable positioning, and heightened risk of gap-downs.",
+            "value_text": f"{avg_vol:.1f}%" if avg_vol is not None else "--",
+            "threshold": ">= 42% Watch / 55% Alert",
+            "status": vol_status,
+        },
+        {
+            "id": "median_forward_pe",
+            "label": "Median Forward P/E",
+            "description": "Typical next-12-month earnings multiple across AI constituents.",
+            "significance": "High multiples (30x–40x+) leave little margin for error if hyperscaler AI spending or earnings growth slows.",
+            "value_text": f"{med_fpe:.1f}x" if med_fpe is not None else "--",
+            "threshold": ">= 30x Watch / 40x Alert",
+            "status": fpe_status,
+        },
+    ]
+
+    # 2) Pop / Unwind Indicators
+    # Composite 52W drawdown using daily-rebalanced Cap-Wt curve over 1Y
+    drawdown_cap: float | None = None
+    if not df.empty and stock_syms:
+        anchor_1y = get_anchor_date(df.index, "1Y") or df.index[0]
+        _, cap_vals = _weighted_return_series(df, stock_syms, cap_weights, anchor_1y)
+        if cap_vals:
+            levels = np.array([1.0 + v / 100.0 for v in cap_vals], dtype=float)
+            peak = float(np.max(levels))
+            if peak > 0:
+                drawdown_cap = round((levels[-1] / peak - 1.0) * 100.0, 2)
+
+    if drawdown_cap is None:
+        dd_status = "normal"
+    elif drawdown_cap <= -20.0:
+        dd_status = "alert"
+    elif drawdown_cap <= -10.0:
+        dd_status = "watch"
+    else:
+        dd_status = "normal"
+
+    # % of AI constituents above 50D and 200D SMA
+    above_50_cnt = total_50_cnt = above_200_cnt = total_200_cnt = 0
+    if not df.empty:
+        for sym in stock_syms:
+            if sym not in df.columns:
+                continue
+            series = pd.to_numeric(df[sym], errors="coerce").dropna()
+            if len(series) >= 50:
+                total_50_cnt += 1
+                if float(series.iloc[-1]) > float(series.iloc[-50:].mean()):
+                    above_50_cnt += 1
+            if len(series) >= 200:
+                total_200_cnt += 1
+                if float(series.iloc[-1]) > float(series.iloc[-200:].mean()):
+                    above_200_cnt += 1
+
+    pct_50 = round(above_50_cnt / total_50_cnt * 100.0) if total_50_cnt else None
+    pct_200 = round(above_200_cnt / total_200_cnt * 100.0) if total_200_cnt else None
+    if pct_50 is None and pct_200 is None:
+        sma_status = "normal"
+    elif (pct_50 is not None and pct_50 <= 25) or (pct_200 is not None and pct_200 <= 35):
+        sma_status = "alert"
+    elif (pct_50 is not None and pct_50 <= 45) or (pct_200 is not None and pct_200 <= 55):
+        sma_status = "watch"
+    else:
+        sma_status = "normal"
+
+    # Multi-timeframe relative breakdown (1M and 3M negative & trailing S&P 500)
+    cap_1m = composite.get("cap", {}).get("ret_1m")
+    spx_1m = spx_bench.get("ret_1m") if spx_bench else None
+    spx_3m = spx_bench.get("ret_3m") if spx_bench else None
+    neg_1m = cap_1m is not None and cap_1m < 0
+    neg_3m = cap_3m is not None and cap_3m < 0
+    lag_1m = cap_1m is not None and spx_1m is not None and cap_1m < spx_1m
+    lag_3m = cap_3m is not None and spx_3m is not None and cap_3m < spx_3m
+
+    if neg_1m and neg_3m and lag_1m and lag_3m:
+        rel_status = "alert"
+        rel_text = f"1M {cap_1m:+.1f}% / 3M {cap_3m:+.1f}% (Lagging {spx_label})"
+    elif (neg_1m and lag_1m) or (neg_1m and neg_3m):
+        rel_status = "watch"
+        rel_text = f"1M {cap_1m:+.1f}% / 3M {cap_3m if cap_3m is not None else 0:+.1f}%"
+    else:
+        rel_status = "normal"
+        rel_text = f"1M {cap_1m:+.1f}% / 3M {cap_3m:+.1f}%" if (cap_1m is not None and cap_3m is not None) else "--"
+
+    # Full-stack sector contagion (count of AI sectors negative over 1M)
+    ai_sectors = [sec for sec in sector_summaries if not sec.get("is_benchmark")]
+    neg_sec_1m = sum(
+        1 for sec in ai_sectors
+        if sec.get("equal", {}).get("ret_1m") is not None and sec["equal"]["ret_1m"] < 0
+    )
+    tot_ai_sec = len(ai_sectors)
+    if tot_ai_sec and neg_sec_1m >= tot_ai_sec:
+        contagion_status = "alert"
+    elif neg_sec_1m >= max(1, tot_ai_sec - 1):
+        contagion_status = "watch"
+    else:
+        contagion_status = "normal"
+
+    # Down-day volume pressure (last 20 trading days) + today's high-volume drops
+    down_vol_ratio: float | None = None
+    if not df.empty and not vdf.empty and stock_syms:
+        cols = [s for s in stock_syms if s in df.columns and s in vdf.columns]
+        if cols:
+            eq_rets = df[cols].pct_change().mean(axis=1).iloc[-21:-1]
+            tot_vol = vdf[cols].sum(axis=1).reindex(eq_rets.index)
+            down_vols = tot_vol[eq_rets < 0].dropna()
+            up_vols = tot_vol[eq_rets > 0].dropna()
+            if not down_vols.empty and not up_vols.empty and float(up_vols.mean()) > 0:
+                down_vol_ratio = round(float(down_vols.mean() / up_vols.mean()), 2)
+
+    hv_drops = sum(
+        1 for s in stocks
+        if s.get("ret_1d") is not None and s["ret_1d"] <= -3.0
+        and s.get("vol_ratio") is not None and s["vol_ratio"] >= 1.5
+    )
+    if (down_vol_ratio is not None and down_vol_ratio >= 1.25) or hv_drops >= 3:
+        vol_press_status = "alert"
+    elif (down_vol_ratio is not None and down_vol_ratio >= 1.08) or hv_drops >= 1:
+        vol_press_status = "watch"
+    else:
+        vol_press_status = "normal"
+
+    vol_press_text = (
+        f"{down_vol_ratio:.2f}x down/up ({hv_drops} HV drops)"
+        if down_vol_ratio is not None
+        else f"{hv_drops} HV drops today"
+    )
+
+    unwind_signals = [
+        {
+            "id": "drawdown_52w",
+            "label": "Composite Drawdown (52W Peak)",
+            "description": "How far the cap-weighted AI index has dropped from its 1-year high.",
+            "significance": "Normal dips stay within -5% to -12%; drops past -20% indicate bear-market unwind territory rather than a brief pause.",
+            "value_text": f"{drawdown_cap:+.2f}%" if drawdown_cap is not None else "--",
+            "threshold": "<= -10% Watch / -20% Alert",
+            "status": dd_status,
+        },
+        {
+            "id": "sma_breadth",
+            "label": "Trend Breadth (>50D / >200D SMA)",
+            "description": "Share of AI stocks still trading above their 50-day and 200-day averages.",
+            "significance": "When fewer than 25%–45% hold key moving averages, rallies tend to fade because most constituents are already in downtrends.",
+            "value_text": f"{pct_50 if pct_50 is not None else '--'}% / {pct_200 if pct_200 is not None else '--'}%",
+            "threshold": "<= 45% Watch / 25% Alert (50D)",
+            "status": sma_status,
+        },
+        {
+            "id": "rel_breakdown",
+            "label": f"1M & 3M Trend vs {spx_label}",
+            "description": "Whether AI stocks are losing ground in absolute terms and vs the S&P 500.",
+            "significance": "Negative 1M and 3M returns that also trail the S&P 500 show sustained institutional rotation out of AI leadership.",
+            "value_text": rel_text,
+            "threshold": "1M & 3M <0 + Trailing",
+            "status": rel_status,
+        },
+        {
+            "id": "sector_contagion",
+            "label": "Full-Stack Contagion (1M < 0)",
+            "description": "Whether weakness is isolated to one area or hitting hardware, power, and software together.",
+            "significance": "Healthy pullbacks rotate between sectors; 4/4 sectors falling together signals broad loss of conviction in the AI capex theme.",
+            "value_text": f"{neg_sec_1m} / {tot_ai_sec} sectors" if tot_ai_sec else "--",
+            "threshold": "3/4 Watch / 4/4 Alert",
+            "status": contagion_status,
+        },
+        {
+            "id": "down_vol_pressure",
+            "label": "Down-Day Volume Pressure (20D)",
+            "description": "Whether trading volume expands on selloffs compared to up days.",
+            "significance": "Heavier volume on red days (>=1.08x–1.25x) points to institutional distribution rather than quiet profit-taking.",
+            "value_text": vol_press_text,
+            "threshold": ">= 1.08x Watch / 1.25x Alert",
+            "status": vol_press_status,
+        },
+    ]
+
+    froth_score = _score_from_signals(froth_signals)
+    unwind_score = _score_from_signals(unwind_signals)
+
+    if froth_score >= 75:
+        froth_label = "Extreme Froth"
+    elif froth_score >= 50:
+        froth_label = "Elevated"
+    elif froth_score >= 25:
+        froth_label = "Moderate"
+    else:
+        froth_label = "Contained"
+
+    if unwind_score >= 75:
+        unwind_label = "Structural Unwind"
+    elif unwind_score >= 50:
+        unwind_label = "Broad Correction"
+    elif unwind_score >= 25:
+        unwind_label = "Pullback / Rotation"
+    else:
+        unwind_label = "Healthy Uptrend"
+
+    dd_phrase = f"{abs(drawdown_cap):.1f}% below its 52-week high" if drawdown_cap is not None and drawdown_cap < 0 else "near its 52-week high"
+    breadth_phrase = f"only {pct_50}% of AI stocks sit above their 50-day average" if pct_50 is not None and pct_50 < 50 else f"{pct_50}% of AI stocks sit above their 50-day average" if pct_50 is not None else "trend breadth is mixed"
+    val_phrase = f"median forward P/E is {med_fpe:.1f}x" if med_fpe is not None else "valuation multiples are mixed"
+
+    if unwind_score >= 50 and froth_score >= 50:
+        summary_headline = "Late-Stage Bubble Unwind — Stretched valuations are breaking down."
+        summary_note = (
+            f"AI stocks look both overextended and in an active selloff: the index is {dd_phrase}, "
+            f"{neg_sec_1m}/{tot_ai_sec} AI sectors are negative over 1M, and {breadth_phrase} while {val_phrase}."
+        )
+    elif unwind_score >= 50:
+        summary_headline = "Active Unwind — Broad selling across AI, though valuations have cooled."
+        summary_note = (
+            f"Weakness has spread across {neg_sec_1m}/{tot_ai_sec} AI sectors: the index is {dd_phrase} and {breadth_phrase}. "
+            f"However, bubble froth is currently {froth_label.lower()} ({val_phrase}), meaning this looks more like a trend/growth reset than runaway euphoria."
+        )
+    elif froth_score >= 50 and unwind_score >= 25:
+        summary_headline = "Elevated Froth + Early Pullback — Watch closely for contagion."
+        summary_note = (
+            f"Valuations and crowding remain stretched ({val_phrase}) while early cracks are showing ({dd_phrase}; {neg_sec_1m}/{tot_ai_sec} sectors down over 1M)."
+        )
+    elif froth_score >= 50:
+        summary_headline = "Bubble Warning — Prices and crowding look stretched, but the uptrend is intact."
+        summary_note = (
+            f"Froth indicators are elevated ({val_phrase}) with strong momentum ({breadth_phrase}). "
+            f"No breakdown yet, though pullbacks from these levels tend to be sharper."
+        )
+    elif unwind_score >= 25:
+        summary_headline = "Routine Pullback / Rotation — Localized cooling without a full AI bust."
+        summary_note = (
+            f"Some AI names are pulling back ({dd_phrase}; {neg_sec_1m}/{tot_ai_sec} sectors negative over 1M), "
+            f"while valuations stay {froth_label.lower()} ({val_phrase})."
+        )
+    else:
+        summary_headline = "Healthy Uptrend — Broad participation with contained valuations."
+        summary_note = (
+            f"Most AI stocks are holding their trends ({breadth_phrase}; {dd_phrase}) without extreme valuation froth ({val_phrase})."
+        )
+
+    return {
+        "froth_score": froth_score,
+        "froth_label": froth_label,
+        "unwind_score": unwind_score,
+        "unwind_label": unwind_label,
+        "drawdown_cap_pct": drawdown_cap,
+        "pct_above_50d": pct_50,
+        "pct_above_200d": pct_200,
+        "median_forward_pe": med_fpe,
+        "summary_headline": summary_headline,
+        "summary_note": summary_note,
+        "caveat": "How to read this: Froth measures whether AI looks like an overheated bubble; Unwind measures whether the market is actively breaking down. Confirm with hyperscaler capex guidance and earnings reactions.",
+        "froth_signals": froth_signals,
+        "unwind_signals": unwind_signals,
+    }

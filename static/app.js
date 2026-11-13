@@ -44,6 +44,16 @@
     kpiBreadthMain: document.getElementById("kpi-breadth-main"),
     kpiBreadthSub: document.getElementById("kpi-breadth-sub"),
     kpiBenchmarks: document.getElementById("kpi-benchmarks"),
+    regimeSection: document.getElementById("regime-section"),
+    regimeHeadline: document.getElementById("regime-headline"),
+    regimeSummary: document.getElementById("regime-summary"),
+    frothLabel: document.getElementById("froth-label"),
+    frothBar: document.getElementById("froth-bar"),
+    unwindLabel: document.getElementById("unwind-label"),
+    unwindBar: document.getElementById("unwind-bar"),
+    frothSignals: document.getElementById("froth-signals"),
+    unwindSignals: document.getElementById("unwind-signals"),
+    regimeCaveat: document.getElementById("regime-caveat"),
     mainChartTitle: document.getElementById("main-chart-title"),
     mainChartSubtitle: document.getElementById("main-chart-subtitle"),
     chartLegend: document.getElementById("chart-legend"),
@@ -200,6 +210,7 @@
     if (!state.data) return;
     renderHeaderTimestamp();
     renderKpis();
+    renderRegimeMonitor();
     renderPrimaryChart();
     renderUnusualMoves();
     renderSectorCards();
@@ -207,6 +218,82 @@
     renderSectorBars();
     renderSectorFilterPills();
     renderWatchlistTable();
+  }
+
+  function scoreColor(score) {
+    if (score >= 75) return "#f43f5e";
+    if (score >= 50) return "#f59e0b";
+    if (score >= 25) return "#38bdf8";
+    return "#10b981";
+  }
+
+  function renderSignalList(signals) {
+    if (!Array.isArray(signals) || !signals.length) {
+      return '<div class="empty-state">No signals available</div>';
+    }
+    return signals
+      .map((sig) => {
+        const status = sig.status || "normal";
+        let badgeCls = "badge-pos";
+        let statusText = "Normal";
+        if (status === "watch") {
+          badgeCls = "badge-warn";
+          statusText = "Watch";
+        } else if (status === "alert") {
+          badgeCls = "badge-neg";
+          statusText = "Alert";
+        }
+        const tipHtml =
+          sig.description || sig.significance
+            ? `<span class="tip-wrap">
+                <button type="button" class="tip-btn" aria-label="Explain ${escapeHtml(sig.label)}">?</button>
+                <span class="tip-popover">
+                  <strong>${escapeHtml(sig.label)}</strong>
+                  <span>${escapeHtml(sig.description || "")}</span>
+                  ${sig.significance ? `<span class="tip-sig"><strong>Significance:</strong> ${escapeHtml(sig.significance)}</span>` : ""}
+                </span>
+              </span>`
+            : "";
+        return `<div class="signal-row">
+          <div>
+            <span class="signal-name">${escapeHtml(sig.label)}${tipHtml}</span>
+            ${sig.description ? `<span class="signal-desc">${escapeHtml(sig.description)}</span>` : ""}
+            <span class="signal-thresh">${escapeHtml(sig.threshold)}</span>
+          </div>
+          <div class="signal-val">${escapeHtml(sig.value_text)}</div>
+          <span class="badge ${badgeCls}">${statusText}</span>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function renderRegimeMonitor() {
+    const reg = state.data.regime;
+    if (!reg) {
+      el.regimeSection.classList.add("hidden");
+      return;
+    }
+    el.regimeSection.classList.remove("hidden");
+    el.regimeHeadline.textContent = reg.summary_headline || "";
+    el.regimeSummary.textContent = reg.summary_note || "";
+    el.regimeCaveat.textContent = reg.caveat || "";
+
+    const fScore = reg.froth_score ?? 0;
+    const fColor = scoreColor(fScore);
+    el.frothLabel.textContent = `${reg.froth_label} (${fScore}/100)`;
+    el.frothLabel.style.color = fColor;
+    el.frothBar.style.width = `${Math.max(4, fScore)}%`;
+    el.frothBar.style.background = fColor;
+
+    const uScore = reg.unwind_score ?? 0;
+    const uColor = scoreColor(uScore);
+    el.unwindLabel.textContent = `${reg.unwind_label} (${uScore}/100)`;
+    el.unwindLabel.style.color = uColor;
+    el.unwindBar.style.width = `${Math.max(4, uScore)}%`;
+    el.unwindBar.style.background = uColor;
+
+    el.frothSignals.innerHTML = renderSignalList(reg.froth_signals);
+    el.unwindSignals.innerHTML = renderSignalList(reg.unwind_signals);
   }
 
   function renderHeaderTimestamp() {
@@ -649,8 +736,8 @@
           <div class="detail-stat-val">${s.vol_ratio ? s.vol_ratio.toFixed(2) + "x" : "--"} · ${s.vol_30d_ann ? s.vol_30d_ann.toFixed(1) + "%" : "--"}</div>
         </div>
         <div class="detail-stat-box">
-          <div class="detail-stat-label">Market Cap / 1D Z-Score</div>
-          <div class="detail-stat-val">${fmtCap(s.market_cap)} · ${s.z_score_1d !== null && s.z_score_1d !== undefined ? s.z_score_1d.toFixed(2) + "σ" : "--"}</div>
+          <div class="detail-stat-label">Market Cap / Fwd P/E · Z</div>
+          <div class="detail-stat-val">${fmtCap(s.market_cap)} · ${s.forward_pe ? s.forward_pe.toFixed(1) + "x" : "--"} · ${s.z_score_1d !== null && s.z_score_1d !== undefined ? s.z_score_1d.toFixed(2) + "σ" : "--"}</div>
         </div>
       `;
 
