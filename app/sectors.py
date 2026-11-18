@@ -61,6 +61,7 @@ DEFAULT_TICKERS: list[dict[str, str]] = [
     {"symbol": "META", "name": "Meta Platforms", "sector": "core_ai"},
     {"symbol": "AMZN", "name": "Amazon", "sector": "core_ai"},
     {"symbol": "PLTR", "name": "Palantir", "sector": "core_ai"},
+    {"symbol": "ANT", "name": "Anthropic", "sector": "core_ai"},  # Nasdaq IPO Nov 19, 2026
     # Semiconductors & Equipment
     {"symbol": "AMD", "name": "AMD", "sector": "semis"},
     {"symbol": "AVGO", "name": "Broadcom", "sector": "semis"},

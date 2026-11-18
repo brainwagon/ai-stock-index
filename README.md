@@ -7,7 +7,7 @@ A web dashboard for monitoring live and historical performance across AI and adj
 
 ## Tracked Sectors
 
-- **Core AI & Hyperscalers**: `NVDA`, `MSFT`, `GOOGL`, `META`, `AMZN`, `PLTR`
+- **Core AI & Hyperscalers**: `NVDA`, `MSFT`, `GOOGL`, `META`, `AMZN`, `PLTR`, `ANT` (Anthropic, Nasdaq IPO Nov 19, 2026)
 - **Semiconductors & Equipment**: `AMD`, `AVGO`, `TSM`, `ASML`, `MU`, `ARM`
 - **Data Center Infra & Power**: `VRT`, `ETN`, `EQIX`, `VST`, `CEG`, `DLR`
 - **AI Software, Cloud & Robotics**: `SNOW`, `DDOG`, `CRM`, `NOW`, `TSLA`, `ISRG`
